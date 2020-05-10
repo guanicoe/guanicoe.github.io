@@ -1,0 +1,9 @@
+//output:../_layouts/default.html, pretty:true
+doctype html
+html(lang='en')
+  | {% include head.html %}
+  body
+    
+    .wrapper
+      | {{ content }}
+    |   {% include analytics.html %}

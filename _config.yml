@@ -1,0 +1,40 @@
+title: Guanicoe
+description: > # this means to ignore newlines until "baseurl:"
+  These are a couple write ups for box found on HackTheBox.eu, I also post some cheatsheets, or other useful trickes where hac... pentesting
+permalink: ':title/'
+baseurl: "" # the subpath of your site, e.g. /blog
+url: "" # the base hostname & protocol for your site, e.g. http://example.com
+site-twitter: #if your site has a twitter account, enter it here
+# defaults:
+#   -
+#     scope:
+#       path: "_layouts" # an empty string here means all files in the project
+#     values:
+#       layout: "default"
+# Author Settings
+author: Guanicoe # add your name
+author-img: david-freeman.jpg # add your photo
+about-author: #I am a web developer focusing on front-end development. Always hungry to keep learning. # add description
+social-github: guanicoe/guanicoe.github.io/tree/master/_posts # add your Github handle
+social-discord: fWSdBF # guanicoe # add your Github handle
+social-email: guanicoe@pm.me
+
+# Disqus
+discus-identifier: #mr-brown # add your discus identifier
+
+# Tracker
+analytics: # Google Analytics
+
+# Build Settings
+markdown: kramdown
+plugins:
+  - jekyll-sitemap
+  - jekyll-paginate
+  - jemoji
+
+paginate: 50
+paginate_path: "/page/:num"
+
+exclude: ["node_modules", "gulpfile.js", "package.json", "yarn.lock", '_jade']
+
+# Tools: # bundle exec jekyll serve

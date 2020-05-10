@@ -1,0 +1,35 @@
+//output:../_layouts/post.html, pretty:false
+| ---
+| layout: main
+| ---
+| 
+
+article.article-page
+  .page-content
+    
+    .wrap-content
+      header.header-page
+        h1.page-title {{page.title}}
+        img(src='{{site.baseurl}}/assets/img/{{page.img}}', style='width:200px; display: block; padding: 20px;  margin-left: auto; margin-right: auto;')
+        div
+          p(style="text-align: center;")
+            | OS:  {{page.os}} | Difficulty: {{page.difficulty}} | Points: {{page.points}} | Release: {{page.release | date: '%d %b %Y'}} | IP: {{page.ip}} 
+        .page-date
+          span Rooted: {{page.date | date: '%d %b %Y'}}    
+        
+        .page-footer
+          .page-tag(style="display: flex;flex-wrap: wrap; width:100%;")
+            | {% for tag in page.tags %}
+            a.tag(href='{{site.baseurl}}/tags/\#{{tag}}') \#{{ tag }} 
+            | {% endfor %}
+      |       {{content | markdownify}}
+      .page-footer
+        .page-share
+          //- a(href="https://twitter.com/intent/tweet?text={{ page.title }}&url={{ site.url }}{{ page.url }}", title='Share on Twitter', rel='nofollow', target='_blank') Twitter
+          a(href='https://facebook.com/sharer.php?u={{ site.url }}{{ page.url }}', title='Share on Facebook', rel='nofollow', target='_blank') Facebook
+          a(href='https://plus.google.com/share?url={{ site.url }}{{ page.url }}', title='Share on Google+', rel='nofollow', target='_blank') Google+
+        .page-tag
+          | {% for tag in page.tags %}
+          a.tag(href='{{site.baseurl}}/tags/\#{{tag}}') \#{{ tag }}
+          |           {% endfor %}
+      |       {% include disqus.html %}

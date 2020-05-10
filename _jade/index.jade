@@ -1,0 +1,24 @@
+//output:../index.html, pretty:false
+|---
+|layout: main
+|---
+
+{% for post in paginator.posts %}
+article.post
+  {% if post.img %}
+  a.post-thumbnail(style="background-image: url({{'/assets/img/' | prepend: site.baseurl | append : post.img}})" , href='{{post.url | prepend: site.baseurl}}')
+  {% endif %}
+  .post-content
+    h2.post-title
+      a(href='{{post.url | prepend: site.baseurl}}') {{post.title}}
+    p {{ post.description | strip_html | truncatewords: 20 }}
+    span.post-date {{post.date | date: '%d %b %Y'}}   — 
+    span.post-words
+      | {% capture words %}{{ post.content | number_of_words }}{% endcapture %}{% unless words contains "-" %}{{ words | plus: 250 | divided_by: 250 | append: " minute read" }}{% endunless %}
+    .page-footer
+      .page-tag(style="display: flex;flex-wrap: wrap; width:100%;")
+        | {% for tag in post.tags %}
+        a(style="margin: 2px;").tag(href='{{site.baseurl}}/tags/\#{{tag}}') \#{{ tag }}
+        | {% endfor %}
+{% endfor %}
+{% include pagination.html %}

